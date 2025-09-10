@@ -1,0 +1,16 @@
+[project]
+name = "recordtranscribe"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "keyboard>=0.13.5",
+    "pygame>=2.6.1",
+    "pyperclip>=1.9.0",
+    "scipy>=1.16.1",
+    "sounddevice>=0.5.2",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "whisperx>=3.4.2",
+]
