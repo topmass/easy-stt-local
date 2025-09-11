@@ -1,45 +1,50 @@
-import keyboard
-import sounddevice as sd
-import numpy as np
-from scipy.io.wavfile import write
-import whisperx
-import torch
-import threading
-import time
 import os
-import pyperclip  # For clipboard functionality
-import pygame  # For playing sound effects
+import sys
+import time
+import numpy as np
+import sounddevice as sd
+from scipy.io.wavfile import write
+from nemo.collections.asr.models import ASRModel
+import torch
+import pyperclip
+import pygame
+import threading
 import ctypes
+
 
 class AudioRecorder:
     def __init__(self):
         self.recording = False
         self.audio_data = []
         self.sample_rate = 44100
-        self.device = "cuda"  # GPU only
-        self.compute_type = "float16"  # Best for GPU
-        
+
+        # NeMo will automatically use GPU if available
+        print("NeMo will automatically detect and use available GPU")
+
         # Sound effect paths
         self.start_sound = os.path.join("soundfx", "start.mp3")
         self.stop_sound = os.path.join("soundfx", "stop.mp3")
-        
+
         # Initialize pygame mixer for sound playback
         try:
             pygame.mixer.init()
             print("Sound system initialized.")
         except Exception as e:
             print(f"Could not initialize sound system: {str(e)}")
-        
-        # Load WhisperX model
-        print("Loading WhisperX model...")
-        self.model = whisperx.load_model("distil-small.en", self.device, compute_type=self.compute_type)
+
+        # Load NeMo ASR model
+        print("Loading NeMo ASR model...")
+        self.model = ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
+        self.model.eval()
         print("Model loaded!")
+
 
     def play_sound(self, sound_file):
         """Play a sound file using pygame."""
         try:
-            pygame.mixer.music.load(sound_file)
-            pygame.mixer.music.play()
+            if os.path.exists(sound_file):
+                pygame.mixer.music.load(sound_file)
+                pygame.mixer.music.play()
         except Exception as e:
             print(f"Could not play sound {sound_file}: {str(e)}")
 
@@ -80,9 +85,17 @@ class AudioRecorder:
                 write(temp_wav, self.sample_rate, audio_array)
                 
                 try:
-                    # Load and transcribe audio
-                    audio = whisperx.load_audio(temp_wav)
-                    result = self.model.transcribe(audio, batch_size=8)
+                    # Transcribe audio with NeMo (model already loaded in __init__)
+                    print("Using pre-loaded model for transcription...")
+                    transcriptions = self.model.transcribe([temp_wav])
+                    # Convert NeMo output to expected format
+                    result = {"segments": []}
+                    if transcriptions and len(transcriptions) > 0:
+                        # Extract text from Hypothesis object
+                        hypothesis = transcriptions[0]
+                        full_text = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
+                        # Create a single segment for the full transcription
+                        result["segments"] = [{"text": full_text}]
                     
                     # Collect full transcription for clipboard
                     full_transcription = ""
@@ -90,16 +103,19 @@ class AudioRecorder:
                     # Print transcription
                     print("\nTranscription:")
                     print("-" * 50)
-                    for segment in result["segments"]:
-                        print(f"{segment['text']}")
-                        full_transcription += segment['text'] + " "
+                    for segment in result.get("segments", []):
+                        text = segment.get('text', '')
+                        print(text)
+                        full_transcription += text + " "
                     print("-" * 50)
                     
                     # Copy to clipboard
                     full_transcription = full_transcription.strip()
                     if full_transcription:
-                        pyperclip.copy(full_transcription)
-                        print("Transcription copied to clipboard!")
+                        if copy_to_clipboard(full_transcription):
+                            print("Transcription copied to clipboard!")
+                        else:
+                            print("Clipboard unavailable. See README for options.")
                         
                         # Play stop sound after transcription is copied
                         self.play_sound(self.stop_sound)
@@ -117,62 +133,137 @@ class AudioRecorder:
 
 def is_window_focused():
     """Check if the current console window is focused (Windows only)."""
+    if not sys.platform.startswith("win"):
+        return True
     try:
-        # Get the foreground window handle
         foreground_window = ctypes.windll.user32.GetForegroundWindow()
-        
-        # Get the current console window handle
         console_window = ctypes.windll.kernel32.GetConsoleWindow()
-        
-        # Check if the console window is the foreground window
         return foreground_window == console_window
     except Exception:
-        # If there's any error, default to True for safety
         return True
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to clipboard using system clipboard command."""
+    import subprocess
+    import os
+    
+    # For Wayland systems
+    if os.environ.get('XDG_SESSION_TYPE') == 'wayland':
+        try:
+            subprocess.run(['wl-copy'], input=text.encode(), check=True)
+            print("Copied to clipboard using wl-copy")
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("wl-copy not found. Install with: sudo pacman -S wl-clipboard")
+            return False
+    
+    # For X11 systems  
+    else:
+        try:
+            subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode(), check=True)
+            print("Copied to clipboard using xclip")
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("xclip not found. Install with: sudo pacman -S xclip")
+            return False
 
 def main():
     recorder = AudioRecorder()
-    print("Press left alt twice quickly to start recording. Press left alt once to stop.")
-    print("Press 'Q' to quit (only works when this window is focused).")
-    
-    # Track left alt key presses for double-tap detection
-    last_alt_press_time = 0
+
+    # Allow changing the hotkey via env vars to avoid conflicts
+    hotkey = os.getenv("RT_HOTKEY", "alt").strip().lower()  # e.g., 'f9', 'alt', 'caps_lock', 's'
+
+    print(f"Hotkey: double-press '{hotkey}' to start; single-press '{hotkey}' to stop.")
+    print("Quit: use Ctrl+C to exit.")
+
+    last_alt_press_time = 0.0
     double_tap_threshold = 0.3  # seconds
     running = True
-    
-    def on_alt_press(event):
-        nonlocal last_alt_press_time
-        if event.name == 'alt' and event.event_type == 'down':
-            current_time = time.time()
+    stop_cooldown = float(os.getenv("RT_STOP_COOLDOWN", "0.25"))
+    stop_armed_at = 0.0
+
+    if sys.platform.startswith("win"):
+        # Use 'keyboard' on Windows
+        import keyboard  # type: ignore
+
+        def on_key_event(event):
+            nonlocal last_alt_press_time, running, stop_armed_at
+            if event.event_type != 'down':
+                return
+
+            name = (event.name or '').lower()
+            target = hotkey.replace('_', ' ')
+
+            if name == target:
+                current_time = time.time()
+                if recorder.recording:
+                    if current_time >= stop_armed_at:
+                        recorder.stop_recording()
+                    last_alt_press_time = 0.0
+                elif current_time - last_alt_press_time < double_tap_threshold:
+                    recorder.start_recording()
+                    # Arm stop only after a short cooldown to avoid bounce
+                    stop_armed_at = time.time() + stop_cooldown
+                    last_alt_press_time = 0.0
+                else:
+                    last_alt_press_time = current_time
+
+        keyboard.on_press(on_key_event)
+
+        while running:
+            time.sleep(0.1)
+    else:
+        # Use 'pynput' on Linux/macOS to avoid root and work on mac
+        from pynput import keyboard as pynput_keyboard  # type: ignore
+
+        # Build a matcher for the configured hotkey
+        special = {
+            'alt': {pynput_keyboard.Key.alt, pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r},
+            'ctrl': {pynput_keyboard.Key.ctrl, pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r},
+            'shift': {pynput_keyboard.Key.shift, pynput_keyboard.Key.shift_l, pynput_keyboard.Key.shift_r},
+            'caps_lock': {pynput_keyboard.Key.caps_lock},
+            'f8': {pynput_keyboard.Key.f8},
+            'f9': {pynput_keyboard.Key.f9},
+            'f10': {pynput_keyboard.Key.f10},
+        }
+
+        def is_hotkey(k) -> bool:
+            hk = hotkey
+            if hk in special:
+                return k in special[hk]
+            # Single character keys
+            if isinstance(k, pynput_keyboard.KeyCode) and k.char:
+                return k.char.lower() == hk
+            return False
+
+        def on_press(key):
+            nonlocal last_alt_press_time, running, stop_armed_at
             
-            if recorder.recording:
-                # If already recording, stop with a single press
-                recorder.stop_recording()
-                # Reset timer
-                last_alt_press_time = 0
-            elif current_time - last_alt_press_time < double_tap_threshold:
-                # Double tap detected, start recording
-                recorder.start_recording()
-                # Reset timer to prevent triple-tap from triggering again
-                last_alt_press_time = 0
+            if is_hotkey(key):
+                current_time = time.time()
+                if recorder.recording:
+                    if current_time >= stop_armed_at:
+                        recorder.stop_recording()
+                    last_alt_press_time = 0.0
+                elif current_time - last_alt_press_time < double_tap_threshold:
+                    recorder.start_recording()
+                    # Arm stop only after a short cooldown to avoid bounce
+                    stop_armed_at = time.time() + stop_cooldown
+                    last_alt_press_time = 0.0
+                else:
+                    last_alt_press_time = current_time
             else:
-                # First tap
-                last_alt_press_time = current_time
-    
-    def on_quit_press(event):
-        nonlocal running
-        # Check if Q is pressed and window is focused
-        if event.name == 'q' and event.event_type == 'down' and is_window_focused():
-            print("Quitting...")
-            running = False
-    
-    # Register keyboard handlers
-    keyboard.on_press(on_alt_press)
-    keyboard.on_press(on_quit_press)
-    
-    # Keep the program running until Q is pressed while window is focused
-    while running:
-        time.sleep(0.1)  # Reduce CPU usage
+                pass  # No other key actions needed
+                    
+        listener = pynput_keyboard.Listener(on_press=on_press)
+        listener.start()
+        try:
+            while running:
+                time.sleep(0.1)
+        finally:
+            listener.stop()
+            listener.join()
 
 if __name__ == "__main__":
     main()

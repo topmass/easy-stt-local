@@ -5,12 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "keyboard>=0.13.5",
     "pygame>=2.6.1",
+    "pynput>=1.8.1",
     "pyperclip>=1.9.0",
     "scipy>=1.16.1",
     "sounddevice>=0.5.2",
     "torch>=2.8.0",
+    "torchaudio>=2.8.0",
     "torchvision>=0.23.0",
-    "whisperx>=3.4.2",
+    "nemo-toolkit[asr]>=2.0.0",
+    "ml-dtypes>=0.5.0",
+    "cuda-python>=12.3",
 ]
