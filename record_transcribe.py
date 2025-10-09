@@ -1,47 +1,108 @@
-import keyboard
 import sounddevice as sd
 import numpy as np
-from scipy.io.wavfile import write
-import whisperx
-import torch
-import threading
 import time
 import os
+import sys
+import platform
 import pyperclip  # For clipboard functionality
-import pygame  # For playing sound effects
-import ctypes
+from pynput import keyboard
+import subprocess
+
+def detect_platform():
+    """Detect the platform and available acceleration."""
+    system = platform.system()
+    machine = platform.machine()
+
+    # Check for Apple Silicon (M1/M2/M3)
+    if system == "Darwin" and machine == "arm64":
+        try:
+            import mlx_whisper
+            print("Detected: Apple Silicon with MLX support")
+            return "mlx", mlx_whisper
+        except ImportError:
+            print("Apple Silicon detected but MLX not installed.")
+            print("Install with: uv pip install -e '.[mlx]'")
+            sys.exit(1)
+
+    # Check for CUDA
+    try:
+        import torch
+        if torch.cuda.is_available():
+            try:
+                import whisperx
+                print("Detected: CUDA GPU with WhisperX support")
+                return "cuda", (torch, whisperx)
+            except ImportError:
+                print("CUDA detected but WhisperX not installed.")
+                print("Install with: uv pip install -e '.[cuda]'")
+                sys.exit(1)
+    except ImportError:
+        pass
+
+    # Fallback to CPU
+    try:
+        import torch
+        import whisper
+        print("Detected: CPU-only mode with OpenAI Whisper")
+        return "cpu", (torch, whisper)
+    except ImportError:
+        print("No Whisper backend found.")
+        print("Install with: uv pip install -e '.[cpu]'")
+        sys.exit(1)
 
 class AudioRecorder:
-    def __init__(self):
+    def __init__(self, backend, modules):
         self.recording = False
         self.audio_data = []
-        self.sample_rate = 44100
-        self.device = "cuda"  # GPU only
-        self.compute_type = "float16"  # Best for GPU
-        
+        self.backend = backend
+        self.sample_rate = 16000  # Whisper expects 16kHz
+
         # Sound effect paths
         self.start_sound = os.path.join("soundfx", "start.mp3")
         self.stop_sound = os.path.join("soundfx", "stop.mp3")
-        
-        # Initialize pygame mixer for sound playback
-        try:
-            pygame.mixer.init()
-            print("Sound system initialized.")
-        except Exception as e:
-            print(f"Could not initialize sound system: {str(e)}")
-        
-        # Load WhisperX model
-        print("Loading WhisperX model...")
-        self.model = whisperx.load_model("distil-small.en", self.device, compute_type=self.compute_type)
-        print("Model loaded!")
+
+        # Initialize the appropriate backend
+        if backend == "mlx":
+            self.mlx_whisper = modules
+            self.model_name = "mlx-community/whisper-small.en-mlx"
+            print("MLX Whisper ready! Model will load on first transcription.")
+
+        elif backend == "cuda":
+            self.torch, self.whisperx = modules
+            print("Loading WhisperX model for CUDA...")
+            self.model = self.whisperx.load_model(
+                "large-v2",
+                device="cuda",
+                compute_type="float16"
+            )
+            print("WhisperX model loaded!")
+
+        elif backend == "cpu":
+            self.torch, self.whisper = modules
+            print("Loading Whisper model for CPU...")
+            self.model = self.whisper.load_model("base.en")
+            print("Whisper model loaded!")
 
     def play_sound(self, sound_file):
-        """Play a sound file using pygame."""
+        """Play a sound file using system audio."""
+        if not os.path.exists(sound_file):
+            return
         try:
-            pygame.mixer.music.load(sound_file)
-            pygame.mixer.music.play()
+            if platform.system() == "Darwin":  # macOS
+                subprocess.Popen(["afplay", sound_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif platform.system() == "Linux":
+                # Try multiple Linux audio players
+                for player in ["paplay", "aplay", "ffplay"]:
+                    try:
+                        subprocess.Popen([player, sound_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        break
+                    except FileNotFoundError:
+                        continue
+            elif platform.system() == "Windows":
+                import winsound
+                winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception as e:
-            print(f"Could not play sound {sound_file}: {str(e)}")
+            pass  # Silently fail if sound can't play
 
     def callback(self, indata, frames, time, status):
         if self.recording:
@@ -72,79 +133,72 @@ class AudioRecorder:
             self.recording = False
             self.stream.stop()
             self.stream.close()
-            
-            # Save audio to temporary WAV file
+
+            # Process audio data
             if len(self.audio_data) > 0:
-                audio_array = np.concatenate(self.audio_data, axis=0)
-                temp_wav = "temp_recording.wav"
-                write(temp_wav, self.sample_rate, audio_array)
-                
+                audio_array = np.concatenate(self.audio_data, axis=0).flatten()
+                # Convert to float32 (all backends support this)
+                audio_float32 = audio_array.astype(np.float32)
+
                 try:
-                    # Load and transcribe audio
-                    audio = whisperx.load_audio(temp_wav)
-                    result = self.model.transcribe(audio, batch_size=8)
-                    
-                    # Collect full transcription for clipboard
-                    full_transcription = ""
-                    
+                    # Transcribe based on backend
+                    if self.backend == "mlx":
+                        # MLX Whisper takes numpy array directly
+                        result = self.mlx_whisper.transcribe(
+                            audio_float32,
+                            path_or_hf_repo=self.model_name
+                        )
+                        full_transcription = result["text"].strip()
+
+                    elif self.backend == "cuda":
+                        # WhisperX can take numpy array directly
+                        result = self.model.transcribe(audio_float32, batch_size=8)
+                        full_transcription = " ".join([seg["text"] for seg in result["segments"]]).strip()
+
+                    elif self.backend == "cpu":
+                        # OpenAI Whisper can take numpy array directly
+                        result = self.model.transcribe(audio_float32)
+                        full_transcription = result["text"].strip()
+
                     # Print transcription
                     print("\nTranscription:")
                     print("-" * 50)
-                    for segment in result["segments"]:
-                        print(f"{segment['text']}")
-                        full_transcription += segment['text'] + " "
+                    print(full_transcription)
                     print("-" * 50)
-                    
+
                     # Copy to clipboard
-                    full_transcription = full_transcription.strip()
                     if full_transcription:
                         pyperclip.copy(full_transcription)
                         print("Transcription copied to clipboard!")
-                        
+
                         # Play stop sound after transcription is copied
                         self.play_sound(self.stop_sound)
-                    
+
                 except Exception as e:
                     print(f"Error during transcription: {str(e)}")
-                
-                # Clean up temporary file
-                try:
-                    os.remove(temp_wav)
-                except:
-                    pass
             else:
                 print("No audio recorded!")
 
-def is_window_focused():
-    """Check if the current console window is focused (Windows only)."""
-    try:
-        # Get the foreground window handle
-        foreground_window = ctypes.windll.user32.GetForegroundWindow()
-        
-        # Get the current console window handle
-        console_window = ctypes.windll.kernel32.GetConsoleWindow()
-        
-        # Check if the console window is the foreground window
-        return foreground_window == console_window
-    except Exception:
-        # If there's any error, default to True for safety
-        return True
-
 def main():
-    recorder = AudioRecorder()
-    print("Press left alt twice quickly to start recording. Press left alt once to stop.")
-    print("Press 'Q' to quit (only works when this window is focused).")
-    
-    # Track left alt key presses for double-tap detection
+    # Detect platform and load appropriate backend
+    backend, modules = detect_platform()
+
+    recorder = AudioRecorder(backend, modules)
+    print("Press Option (Alt) key twice quickly to start recording.")
+    print("Press Option (Alt) key once to stop recording.")
+    print("Press Ctrl+C to quit.")
+
+    # Track alt key presses for double-tap detection
     last_alt_press_time = 0
     double_tap_threshold = 0.3  # seconds
-    running = True
-    
-    def on_alt_press(event):
+
+    def on_press(key):
         nonlocal last_alt_press_time
-        if event.name == 'alt' and event.event_type == 'down':
+
+        # Check if it's an alt/option key
+        if key == keyboard.Key.alt or key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
             current_time = time.time()
-            
+
             if recorder.recording:
                 # If already recording, stop with a single press
                 recorder.stop_recording()
@@ -158,21 +212,17 @@ def main():
             else:
                 # First tap
                 last_alt_press_time = current_time
-    
-    def on_quit_press(event):
-        nonlocal running
-        # Check if Q is pressed and window is focused
-        if event.name == 'q' and event.event_type == 'down' and is_window_focused():
-            print("Quitting...")
-            running = False
-    
-    # Register keyboard handlers
-    keyboard.on_press(on_alt_press)
-    keyboard.on_press(on_quit_press)
-    
-    # Keep the program running until Q is pressed while window is focused
-    while running:
-        time.sleep(0.1)  # Reduce CPU usage
+
+    # Start listening to keyboard events
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
+    try:
+        # Keep the program running
+        listener.join()
+    except KeyboardInterrupt:
+        print("\nQuitting...")
+        listener.stop()
 
 if __name__ == "__main__":
     main()
