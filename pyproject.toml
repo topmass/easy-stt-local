@@ -7,11 +7,10 @@ requires-python = ">=3.12"
 dependencies = [
     "pynput>=1.7.0",
     "pyperclip>=1.9.0",
-    "scipy>=1.16.1",
     "sounddevice>=0.5.2",
     "numpy>=1.24.0",
-    # Platform-specific Whisper dependencies
-    "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Platform-specific ASR dependencies
+    "parakeet-mlx>=0.1.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "torch>=2.0.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "whisperx>=3.4.2; sys_platform == 'linux'",
     "openai-whisper>=20231117; sys_platform != 'darwin' or platform_machine != 'arm64'",

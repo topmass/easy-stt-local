@@ -13,15 +13,15 @@ def detect_platform():
     system = platform.system()
     machine = platform.machine()
 
-    # Check for Apple Silicon (M1/M2/M3)
+    # Check for Apple Silicon (M1/M2/M3) - prefer Parakeet-MLX
     if system == "Darwin" and machine == "arm64":
         try:
-            import mlx_whisper
-            print("Detected: Apple Silicon with MLX support")
-            return "mlx", mlx_whisper
+            from parakeet_mlx import from_pretrained
+            print("Detected: Apple Silicon with Parakeet-MLX support")
+            return "parakeet-mlx", from_pretrained
         except ImportError:
-            print("Apple Silicon detected but MLX not installed.")
-            print("Install with: uv pip install -e '.[mlx]'")
+            print("Apple Silicon detected but Parakeet-MLX not installed.")
+            print("Install with: uv pip install parakeet-mlx")
             sys.exit(1)
 
     # Check for CUDA
@@ -55,17 +55,22 @@ class AudioRecorder:
         self.recording = False
         self.audio_data = []
         self.backend = backend
-        self.sample_rate = 16000  # Whisper expects 16kHz
+        self.sample_rate = 16000  # Standard ASR sample rate
+        self.transcriber = None  # For streaming transcription
 
         # Sound effect paths
         self.start_sound = os.path.join("soundfx", "start.mp3")
         self.stop_sound = os.path.join("soundfx", "stop.mp3")
 
         # Initialize the appropriate backend
-        if backend == "mlx":
-            self.mlx_whisper = modules
-            self.model_name = "mlx-community/whisper-small.en-mlx"
-            print("MLX Whisper ready! Model will load on first transcription.")
+        if backend == "parakeet-mlx":
+            from_pretrained = modules
+            self.model_name = "mlx-community/parakeet-tdt-0.6b-v3"
+            print(f"Loading Parakeet-MLX model ({self.model_name})...")
+            self.model = from_pretrained(self.model_name)
+            # Use the model's expected sample rate
+            self.sample_rate = self.model.preprocessor_config.sample_rate
+            print(f"Parakeet-MLX model loaded! Sample rate: {self.sample_rate}Hz")
 
         elif backend == "cuda":
             self.torch, self.whisperx = modules
@@ -113,11 +118,17 @@ class AudioRecorder:
         if not self.recording:
             # Play start sound
             self.play_sound(self.start_sound)
-                
+
             print("Recording started... Press left alt once to stop.")
             self.audio_data = []
             self.recording = True
-            
+
+            # Initialize streaming transcriber for parakeet-mlx
+            if self.backend == "parakeet-mlx":
+                # Context size: (left_context, right_context) in frames
+                self.transcriber = self.model.transcribe_stream(context_size=(256, 256))
+                self.transcriber.__enter__()
+
             # Start recording stream
             self.stream = sd.InputStream(
                 channels=1,
@@ -142,13 +153,23 @@ class AudioRecorder:
 
                 try:
                     # Transcribe based on backend
-                    if self.backend == "mlx":
-                        # MLX Whisper takes numpy array directly
-                        result = self.mlx_whisper.transcribe(
-                            audio_float32,
-                            path_or_hf_repo=self.model_name
-                        )
-                        full_transcription = result["text"].strip()
+                    if self.backend == "parakeet-mlx":
+                        # Convert numpy array to MLX format directly (no file I/O!)
+                        import mlx.core as mx
+
+                        # Parakeet expects: int16 -> float32 normalized by 32768
+                        # Our audio_array is already float32 from sounddevice
+                        # Convert to MLX array format
+                        audio_mlx = mx.array(audio_float32)
+
+                        # Add audio to the streaming transcriber
+                        self.transcriber.add_audio(audio_mlx)
+                        # Get the final result
+                        result = self.transcriber.result
+                        full_transcription = result.text.strip()
+                        # Close the streaming context
+                        self.transcriber.__exit__(None, None, None)
+                        self.transcriber = None
 
                     elif self.backend == "cuda":
                         # WhisperX can take numpy array directly
@@ -176,6 +197,13 @@ class AudioRecorder:
 
                 except Exception as e:
                     print(f"Error during transcription: {str(e)}")
+                    # Clean up transcriber if error occurs
+                    if self.backend == "parakeet-mlx" and self.transcriber:
+                        try:
+                            self.transcriber.__exit__(None, None, None)
+                        except:
+                            pass
+                        self.transcriber = None
             else:
                 print("No audio recorded!")
 
