@@ -162,12 +162,8 @@ class AudioRecorder:
 
                     elif self.backend == "nemo":
                         # NeMo: Use direct array transcription (no file I/O!)
-                        # NeMo accepts audio and audio_len parameters
-                        audio_len = np.array([len(audio_float32)])
-                        hypotheses = self.model.transcribe(
-                            audio=[audio_float32],
-                            audio_len=audio_len
-                        )
+                        # NeMo accepts numpy arrays directly as a list
+                        hypotheses = self.model.transcribe(audio=[audio_float32])
 
                         # Extract text from NeMo output
                         full_transcription = ""
