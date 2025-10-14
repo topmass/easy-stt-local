@@ -36,20 +36,31 @@ def load_cleanup_prompt():
 
 
 def cleanup_transcription(text, model, tokenizer, base_prompt):
-    """Clean up transcription using DeepSeek R1 Distill."""
-    from mlx_lm import generate
+    """Clean up transcription using DeepSeek R1 Distill with streaming."""
+    from mlx_lm import stream_generate
 
     prompt = f"{base_prompt}\n\nTranscription:\n{text}\n\nCleaned:"
 
-    cleaned = generate(
+    # Stream tokens and build up the cleaned text
+    cleaned_text = ""
+    print("\nCleaned transcription (streaming):")
+    print("-" * 50)
+
+    for response in stream_generate(
         model,
         tokenizer,
         prompt=prompt,
         max_tokens=1024,
         temp=0.3  # Lower temperature for more consistent cleanup
-    )
+    ):
+        # Print each token as it arrives
+        print(response.text, end="", flush=True)
+        cleaned_text = response.text
 
-    return cleaned.strip()
+    print()  # New line after streaming
+    print("-" * 50)
+
+    return cleaned_text.strip()
 
 
 def detect_platform():
@@ -222,30 +233,34 @@ class AudioRecorder:
                             hypothesis = hypotheses[0]
                             full_transcription = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
 
+                    # Show raw transcription
+                    print("\nRaw transcription:")
+                    print("-" * 50)
+                    print(full_transcription)
+                    print("-" * 50)
+
                     # Apply cleanup if enabled
+                    text_to_copy = full_transcription
                     if self.enable_cleanup and full_transcription:
-                        print("\nCleaning up transcription...")
                         try:
-                            full_transcription = cleanup_transcription(
+                            cleaned_text = cleanup_transcription(
                                 full_transcription,
                                 self.cleanup_model,
                                 self.cleanup_tokenizer,
                                 self.cleanup_prompt
                             )
+                            text_to_copy = cleaned_text
                         except Exception as e:
                             print(f"Warning: Cleanup failed: {e}")
                             print("Using raw transcription instead.")
 
-                    # Print transcription
-                    print("\nTranscription:")
-                    print("-" * 50)
-                    print(full_transcription)
-                    print("-" * 50)
-
-                    # Copy to clipboard
-                    if full_transcription:
-                        if copy_to_clipboard(full_transcription):
-                            print("Transcription copied to clipboard!")
+                    # Copy to clipboard (cleaned version if cleanup enabled, otherwise raw)
+                    if text_to_copy:
+                        if copy_to_clipboard(text_to_copy):
+                            if self.enable_cleanup:
+                                print("\n✅ Cleaned transcription copied to clipboard!")
+                            else:
+                                print("\n✅ Transcription copied to clipboard!")
                         else:
                             print("Clipboard unavailable. See README for options.")
 
