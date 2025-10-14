@@ -5,6 +5,51 @@ import numpy as np
 import sounddevice as sd
 import subprocess
 import platform
+import argparse
+
+
+def load_cleanup_model():
+    """Load DeepSeek R1 Distill for text cleanup."""
+    try:
+        from mlx_lm import load
+        print("Loading DeepSeek-R1-Distill-Qwen-1.5B for cleanup...")
+        model, tokenizer = load("mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit")
+        print("Cleanup model loaded!")
+        return model, tokenizer
+    except ImportError:
+        print("mlx-lm not installed. Install with: uv pip install mlx-lm")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Failed to load cleanup model: {e}")
+        sys.exit(1)
+
+
+def load_cleanup_prompt():
+    """Load the cleanup prompt from file."""
+    prompt_file = "cleanup_prompt.txt"
+    try:
+        with open(prompt_file, 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        # Fallback default prompt
+        return "Remove filler words (um, uh, ah, like, you know) and clean up this transcription while keeping the exact meaning. Output only the cleaned text."
+
+
+def cleanup_transcription(text, model, tokenizer, base_prompt):
+    """Clean up transcription using DeepSeek R1 Distill."""
+    from mlx_lm import generate
+
+    prompt = f"{base_prompt}\n\nTranscription:\n{text}\n\nCleaned:"
+
+    cleaned = generate(
+        model,
+        tokenizer,
+        prompt=prompt,
+        max_tokens=1024,
+        temp=0.3  # Lower temperature for more consistent cleanup
+    )
+
+    return cleaned.strip()
 
 
 def detect_platform():
@@ -42,12 +87,18 @@ def detect_platform():
 
 
 class AudioRecorder:
-    def __init__(self, backend, modules):
+    def __init__(self, backend, modules, enable_cleanup=False, cleanup_model=None, cleanup_tokenizer=None, cleanup_prompt=None):
         self.recording = False
         self.audio_data = []
         self.backend = backend
         self.sample_rate = 16000  # Standard ASR sample rate
         self.transcriber = None  # For streaming transcription (Parakeet-MLX)
+
+        # Cleanup configuration
+        self.enable_cleanup = enable_cleanup
+        self.cleanup_model = cleanup_model
+        self.cleanup_tokenizer = cleanup_tokenizer
+        self.cleanup_prompt = cleanup_prompt
 
         # Sound effect paths
         self.start_sound = os.path.join("soundfx", "start.mp3")
@@ -171,6 +222,20 @@ class AudioRecorder:
                             hypothesis = hypotheses[0]
                             full_transcription = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
 
+                    # Apply cleanup if enabled
+                    if self.enable_cleanup and full_transcription:
+                        print("\nCleaning up transcription...")
+                        try:
+                            full_transcription = cleanup_transcription(
+                                full_transcription,
+                                self.cleanup_model,
+                                self.cleanup_tokenizer,
+                                self.cleanup_prompt
+                            )
+                        except Exception as e:
+                            print(f"Warning: Cleanup failed: {e}")
+                            print("Using raw transcription instead.")
+
                     # Print transcription
                     print("\nTranscription:")
                     print("-" * 50)
@@ -247,9 +312,35 @@ def copy_to_clipboard(text: str) -> bool:
             return False
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Real-time speech-to-text transcription')
+    parser.add_argument('--cleanup', action='store_true',
+                       help='Enable LLM cleanup to remove filler words (requires mlx-lm)')
+    args = parser.parse_args()
+
     # Detect platform and load appropriate backend
     backend, modules = detect_platform()
-    recorder = AudioRecorder(backend, modules)
+
+    # Load cleanup model if requested
+    cleanup_model = None
+    cleanup_tokenizer = None
+    cleanup_prompt = None
+
+    if args.cleanup:
+        print("")
+        cleanup_model, cleanup_tokenizer = load_cleanup_model()
+        cleanup_prompt = load_cleanup_prompt()
+        print("✨ Cleanup enabled: transcriptions will be cleaned of filler words")
+        print("")
+
+    recorder = AudioRecorder(
+        backend,
+        modules,
+        enable_cleanup=args.cleanup,
+        cleanup_model=cleanup_model,
+        cleanup_tokenizer=cleanup_tokenizer,
+        cleanup_prompt=cleanup_prompt
+    )
 
     # Allow changing the hotkey via env vars to avoid conflicts
     hotkey = os.getenv("RT_HOTKEY", "alt").strip().lower()  # e.g., 'f9', 'alt', 'caps_lock', 's'
