@@ -3,20 +3,18 @@ import sys
 import time
 import numpy as np
 import sounddevice as sd
-from scipy.io.wavfile import write
 from nemo.collections.asr.models import ASRModel
 import torch
 import pyperclip
-import pygame
-import threading
-import ctypes
+import subprocess
+import platform
 
 
 class AudioRecorder:
     def __init__(self):
         self.recording = False
         self.audio_data = []
-        self.sample_rate = 44100
+        self.sample_rate = 16000  # ASR models expect 16kHz
 
         # NeMo will automatically use GPU if available
         print("NeMo will automatically detect and use available GPU")
@@ -24,13 +22,6 @@ class AudioRecorder:
         # Sound effect paths
         self.start_sound = os.path.join("soundfx", "start.mp3")
         self.stop_sound = os.path.join("soundfx", "stop.mp3")
-
-        # Initialize pygame mixer for sound playback
-        try:
-            pygame.mixer.init()
-            print("Sound system initialized.")
-        except Exception as e:
-            print(f"Could not initialize sound system: {str(e)}")
 
         # Load NeMo ASR model
         print("Loading NeMo ASR model...")
@@ -40,13 +31,30 @@ class AudioRecorder:
 
 
     def play_sound(self, sound_file):
-        """Play a sound file using pygame."""
+        """Play a sound file using system audio player."""
+        if not os.path.exists(sound_file):
+            return
         try:
-            if os.path.exists(sound_file):
-                pygame.mixer.music.load(sound_file)
-                pygame.mixer.music.play()
-        except Exception as e:
-            print(f"Could not play sound {sound_file}: {str(e)}")
+            system = platform.system()
+            if system == "Darwin":  # macOS
+                subprocess.Popen(["afplay", sound_file],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            elif system == "Linux":
+                # Try multiple Linux audio players
+                for player in ["paplay", "aplay", "ffplay"]:
+                    try:
+                        subprocess.Popen([player, sound_file],
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+                        break
+                    except FileNotFoundError:
+                        continue
+            elif system == "Windows":
+                import winsound
+                winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception:
+            pass  # Silently fail if sound can't play
 
     def callback(self, indata, frames, time, status):
         if self.recording:
@@ -77,57 +85,62 @@ class AudioRecorder:
             self.recording = False
             self.stream.stop()
             self.stream.close()
-            
-            # Save audio to temporary WAV file
+
+            # Process audio data
             if len(self.audio_data) > 0:
-                audio_array = np.concatenate(self.audio_data, axis=0)
-                temp_wav = "temp_recording.wav"
-                write(temp_wav, self.sample_rate, audio_array)
-                
+                # Concatenate and convert to float32
+                audio_array = np.concatenate(self.audio_data, axis=0).flatten()
+                audio_float32 = audio_array.astype(np.float32)
+
                 try:
-                    # Transcribe audio with NeMo (model already loaded in __init__)
-                    print("Using pre-loaded model for transcription...")
-                    transcriptions = self.model.transcribe([temp_wav])
-                    # Convert NeMo output to expected format
-                    result = {"segments": []}
-                    if transcriptions and len(transcriptions) > 0:
-                        # Extract text from Hypothesis object
-                        hypothesis = transcriptions[0]
-                        full_text = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
-                        # Create a single segment for the full transcription
-                        result["segments"] = [{"text": full_text}]
-                    
-                    # Collect full transcription for clipboard
-                    full_transcription = ""
-                    
-                    # Print transcription
-                    print("\nTranscription:")
-                    print("-" * 50)
-                    for segment in result.get("segments", []):
-                        text = segment.get('text', '')
-                        print(text)
-                        full_transcription += text + " "
-                    print("-" * 50)
-                    
-                    # Copy to clipboard
-                    full_transcription = full_transcription.strip()
-                    if full_transcription:
-                        if copy_to_clipboard(full_transcription):
-                            print("Transcription copied to clipboard!")
-                        else:
-                            print("Clipboard unavailable. See README for options.")
-                        
-                        # Play stop sound after transcription is copied
-                        self.play_sound(self.stop_sound)
-                    
+                    # Save to temporary WAV file (minimal approach)
+                    # NeMo's transcribe() method expects file paths
+                    import tempfile
+                    import soundfile as sf
+
+                    print("Transcribing audio...")
+
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                        temp_path = tmp_file.name
+                        # Write audio using soundfile (supports float32 directly)
+                        sf.write(temp_path, audio_float32, self.sample_rate)
+
+                    try:
+                        # Transcribe using file path
+                        hypotheses = self.model.transcribe([temp_path])
+
+                        # Extract text from NeMo output
+                        full_transcription = ""
+                        if hypotheses and len(hypotheses) > 0:
+                            hypothesis = hypotheses[0]
+                            full_transcription = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
+
+                        # Print transcription
+                        print("\nTranscription:")
+                        print("-" * 50)
+                        print(full_transcription)
+                        print("-" * 50)
+
+                        # Copy to clipboard
+                        if full_transcription:
+                            if copy_to_clipboard(full_transcription):
+                                print("Transcription copied to clipboard!")
+                            else:
+                                print("Clipboard unavailable. See README for options.")
+
+                            # Play stop sound after transcription is copied
+                            self.play_sound(self.stop_sound)
+                    finally:
+                        # Clean up temp file
+                        try:
+                            os.remove(temp_path)
+                        except:
+                            pass
+
                 except Exception as e:
                     print(f"Error during transcription: {str(e)}")
-                
-                # Clean up temporary file
-                try:
-                    os.remove(temp_wav)
-                except:
-                    pass
+                    import traceback
+                    traceback.print_exc()
             else:
                 print("No audio recorded!")
 

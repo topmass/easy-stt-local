@@ -1,19 +1,19 @@
 [project]
 name = "recordtranscribe"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Voice recording and transcription with NeMo ASR - GPU accelerated"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pygame>=2.6.1",
     "pynput>=1.8.1",
     "pyperclip>=1.9.0",
-    "scipy>=1.16.1",
     "sounddevice>=0.5.2",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
     "torch>=2.8.0",
     "torchaudio>=2.8.0",
     "torchvision>=0.23.0",
     "nemo-toolkit[asr]>=2.0.0",
     "ml-dtypes>=0.5.0",
-    "cuda-python>=12.3",
+    "cuda-python>=12.3,<13.0",
 ]
