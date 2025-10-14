@@ -3,31 +3,73 @@ import sys
 import time
 import numpy as np
 import sounddevice as sd
-from nemo.collections.asr.models import ASRModel
-import torch
-import pyperclip
 import subprocess
 import platform
 
 
+def detect_platform():
+    """Detect the platform and available ASR backend."""
+    system = platform.system()
+    machine = platform.machine()
+
+    # Check for Apple Silicon (M1/M2/M3/M4) - use Parakeet-MLX
+    if system == "Darwin" and machine == "arm64":
+        try:
+            from parakeet_mlx import from_pretrained
+            print("Detected: Apple Silicon with Parakeet-MLX support")
+            return "parakeet-mlx", from_pretrained
+        except ImportError:
+            print("Apple Silicon detected but Parakeet-MLX not installed.")
+            print("Install with: uv pip install parakeet-mlx")
+            sys.exit(1)
+
+    # Check for Linux - prefer NeMo
+    if system == "Linux":
+        try:
+            from nemo.collections.asr.models import ASRModel
+            import torch
+            print("Detected: Linux with NeMo ASR support")
+            return "nemo", (ASRModel, torch)
+        except ImportError:
+            print("Linux detected but NeMo not installed.")
+            print("Install with: uv sync")
+            sys.exit(1)
+
+    # Windows or other platforms - fallback
+    print(f"Platform {system} not fully supported yet. NeMo only works on Linux/macOS.")
+    print("For Windows, consider using WSL2 with Linux setup.")
+    sys.exit(1)
+
+
 class AudioRecorder:
-    def __init__(self):
+    def __init__(self, backend, modules):
         self.recording = False
         self.audio_data = []
-        self.sample_rate = 16000  # ASR models expect 16kHz
-
-        # NeMo will automatically use GPU if available
-        print("NeMo will automatically detect and use available GPU")
+        self.backend = backend
+        self.sample_rate = 16000  # Standard ASR sample rate
+        self.transcriber = None  # For streaming transcription (Parakeet-MLX)
 
         # Sound effect paths
         self.start_sound = os.path.join("soundfx", "start.mp3")
         self.stop_sound = os.path.join("soundfx", "stop.mp3")
 
-        # Load NeMo ASR model
-        print("Loading NeMo ASR model...")
-        self.model = ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
-        self.model.eval()
-        print("Model loaded!")
+        # Initialize the appropriate backend
+        if backend == "parakeet-mlx":
+            from_pretrained = modules
+            self.model_name = "mlx-community/parakeet-tdt-0.6b-v3"
+            print(f"Loading Parakeet-MLX model ({self.model_name})...")
+            self.model = from_pretrained(self.model_name)
+            # Use the model's expected sample rate
+            self.sample_rate = self.model.preprocessor_config.sample_rate
+            print(f"Parakeet-MLX model loaded! Sample rate: {self.sample_rate}Hz")
+
+        elif backend == "nemo":
+            ASRModel, torch = modules
+            print("Loading NeMo ASR model...")
+            print("NeMo will automatically detect and use available GPU")
+            self.model = ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
+            self.model.eval()
+            print("NeMo model loaded!")
 
 
     def play_sound(self, sound_file):
@@ -65,11 +107,17 @@ class AudioRecorder:
         if not self.recording:
             # Play start sound
             self.play_sound(self.start_sound)
-                
+
             print("Recording started... Press left alt once to stop.")
             self.audio_data = []
             self.recording = True
-            
+
+            # Initialize streaming transcriber for parakeet-mlx
+            if self.backend == "parakeet-mlx":
+                # Context size: (left_context, right_context) in frames
+                self.transcriber = self.model.transcribe_stream(context_size=(256, 256))
+                self.transcriber.__enter__()
+
             # Start recording stream
             self.stream = sd.InputStream(
                 channels=1,
@@ -93,21 +141,33 @@ class AudioRecorder:
                 audio_float32 = audio_array.astype(np.float32)
 
                 try:
-                    # Save to temporary WAV file (minimal approach)
-                    # NeMo's transcribe() method expects file paths
-                    import tempfile
-                    import soundfile as sf
-
                     print("Transcribing audio...")
 
-                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-                        temp_path = tmp_file.name
-                        # Write audio using soundfile (supports float32 directly)
-                        sf.write(temp_path, audio_float32, self.sample_rate)
+                    # Transcribe based on backend
+                    if self.backend == "parakeet-mlx":
+                        # Parakeet-MLX: Direct streaming (no file I/O!)
+                        import mlx.core as mx
 
-                    try:
-                        # Transcribe using file path
-                        hypotheses = self.model.transcribe([temp_path])
+                        # Convert numpy to MLX array
+                        audio_mlx = mx.array(audio_float32)
+
+                        # Add audio to the streaming transcriber
+                        self.transcriber.add_audio(audio_mlx)
+                        # Get the final result
+                        result = self.transcriber.result
+                        full_transcription = result.text.strip()
+                        # Close the streaming context
+                        self.transcriber.__exit__(None, None, None)
+                        self.transcriber = None
+
+                    elif self.backend == "nemo":
+                        # NeMo: Use direct array transcription (no file I/O!)
+                        # NeMo accepts audio and audio_len parameters
+                        audio_len = np.array([len(audio_float32)])
+                        hypotheses = self.model.transcribe(
+                            audio=[audio_float32],
+                            audio_len=audio_len
+                        )
 
                         # Extract text from NeMo output
                         full_transcription = ""
@@ -115,32 +175,33 @@ class AudioRecorder:
                             hypothesis = hypotheses[0]
                             full_transcription = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
 
-                        # Print transcription
-                        print("\nTranscription:")
-                        print("-" * 50)
-                        print(full_transcription)
-                        print("-" * 50)
+                    # Print transcription
+                    print("\nTranscription:")
+                    print("-" * 50)
+                    print(full_transcription)
+                    print("-" * 50)
 
-                        # Copy to clipboard
-                        if full_transcription:
-                            if copy_to_clipboard(full_transcription):
-                                print("Transcription copied to clipboard!")
-                            else:
-                                print("Clipboard unavailable. See README for options.")
+                    # Copy to clipboard
+                    if full_transcription:
+                        if copy_to_clipboard(full_transcription):
+                            print("Transcription copied to clipboard!")
+                        else:
+                            print("Clipboard unavailable. See README for options.")
 
-                            # Play stop sound after transcription is copied
-                            self.play_sound(self.stop_sound)
-                    finally:
-                        # Clean up temp file
-                        try:
-                            os.remove(temp_path)
-                        except:
-                            pass
+                        # Play stop sound after transcription is copied
+                        self.play_sound(self.stop_sound)
 
                 except Exception as e:
                     print(f"Error during transcription: {str(e)}")
                     import traceback
                     traceback.print_exc()
+                    # Clean up transcriber if error occurs
+                    if self.backend == "parakeet-mlx" and self.transcriber:
+                        try:
+                            self.transcriber.__exit__(None, None, None)
+                        except:
+                            pass
+                        self.transcriber = None
             else:
                 print("No audio recorded!")
 
@@ -182,7 +243,9 @@ def copy_to_clipboard(text: str) -> bool:
             return False
 
 def main():
-    recorder = AudioRecorder()
+    # Detect platform and load appropriate backend
+    backend, modules = detect_platform()
+    recorder = AudioRecorder(backend, modules)
 
     # Allow changing the hotkey via env vars to avoid conflicts
     hotkey = os.getenv("RT_HOTKEY", "alt").strip().lower()  # e.g., 'f9', 'alt', 'caps_lock', 's'
