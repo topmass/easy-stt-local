@@ -221,9 +221,17 @@ def copy_to_clipboard(text: str) -> bool:
     """Copy text to clipboard using system clipboard command."""
     import subprocess
     import os
-    
-    # For Wayland systems
-    if os.environ.get('XDG_SESSION_TYPE') == 'wayland':
+
+    # macOS: use pbcopy (built-in)
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run(['pbcopy'], input=text.encode(), check=True)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    # Linux: For Wayland systems
+    elif os.environ.get('XDG_SESSION_TYPE') == 'wayland':
         try:
             subprocess.run(['wl-copy'], input=text.encode(), check=True)
             print("Copied to clipboard using wl-copy")
@@ -231,8 +239,8 @@ def copy_to_clipboard(text: str) -> bool:
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("wl-copy not found. Install with: sudo pacman -S wl-clipboard")
             return False
-    
-    # For X11 systems  
+
+    # Linux: For X11 systems
     else:
         try:
             subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode(), check=True)
