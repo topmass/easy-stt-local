@@ -50,8 +50,7 @@ def cleanup_transcription(text, model, tokenizer, base_prompt):
         model,
         tokenizer,
         prompt=prompt,
-        max_tokens=1024,
-        temperature=0.3  # Lower temperature for more consistent cleanup
+        max_tokens=1024
     ):
         # Print each token as it arrives
         print(response.text, end="", flush=True)
