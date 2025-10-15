@@ -164,18 +164,6 @@ class AudioRecorder:
         if self.recording:
             self.audio_data.extend(indata.copy())
 
-            # Stream audio chunks to Parakeet-MLX in real-time
-            if self.backend == "parakeet-mlx" and self.transcriber:
-                try:
-                    import mlx.core as mx
-                    # Convert chunk to MLX and stream it
-                    audio_chunk = indata.flatten().astype(np.float32)
-                    audio_mlx = mx.array(audio_chunk)
-                    self.transcriber.add_audio(audio_mlx)
-                except Exception as e:
-                    # Silently fail - we'll fallback to batch processing
-                    pass
-
     def start_recording(self):
         """Start the recording process."""
         if not self.recording:
@@ -219,10 +207,19 @@ class AudioRecorder:
 
                     # Transcribe based on backend
                     if self.backend == "parakeet-mlx":
-                        # Parakeet-MLX: Audio was already streamed during recording
-                        # Just get the final result
+                        # Parakeet-MLX: Stream audio in one batch
+                        import mlx.core as mx
+
+                        # Convert to MLX array
+                        audio_mlx = mx.array(audio_float32)
+
+                        # Add all audio at once to the streaming transcriber
+                        self.transcriber.add_audio(audio_mlx)
+
+                        # Get the result
                         result = self.transcriber.result
                         full_transcription = result.text.strip()
+
                         # Close the streaming context
                         self.transcriber.__exit__(None, None, None)
                         self.transcriber = None
