@@ -7,13 +7,16 @@ import subprocess
 import platform
 import argparse
 
+# Suppress tokenizer parallelism warning when forking for clipboard
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 def load_cleanup_model():
-    """Load DeepSeek R1 Distill for text cleanup."""
+    """Load Qwen2.5 for text cleanup."""
     try:
         from mlx_lm import load
-        print("Loading DeepSeek-R1-Distill-Qwen-1.5B for cleanup...")
-        model, tokenizer = load("mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit")
+        print("Loading Qwen2.5-1.5B-Instruct for cleanup...")
+        model, tokenizer = load("mlx-community/Qwen2.5-1.5B-Instruct-4bit")
         print("Cleanup model loaded!")
         return model, tokenizer
     except ImportError:
@@ -36,47 +39,49 @@ def load_cleanup_prompt():
 
 
 def cleanup_transcription(text, model, tokenizer, base_prompt):
-    """Clean up transcription using DeepSeek R1 Distill with streaming."""
-    from mlx_lm import stream_generate
+    """Clean up transcription using Qwen2.5."""
+    from mlx_lm import generate
+    import re
 
-    # Format prompt with system instruction and user message
+    # Format with Qwen's chat template
     messages = [
         {"role": "system", "content": base_prompt},
-        {"role": "user", "content": f"Clean this transcription:\n\n{text}"}
+        {"role": "user", "content": f"Transcription to clean:\n{text}"}
     ]
 
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
 
-    # Stream tokens and build up the cleaned text
-    cleaned_text = ""
-    in_thinking = False
-    actual_output = ""
-
-    print("\nCleaned transcription (streaming):")
+    print("\nCleaned transcription:")
     print("-" * 50)
 
-    for response in stream_generate(
+    # Generate the response (no max_tokens limit for long transcriptions)
+    response = generate(
         model,
         tokenizer,
         prompt=prompt,
-        max_tokens=1024
-    ):
-        cleaned_text = response.text
+        verbose=False
+    )
 
-        # DeepSeek R1 uses <think> tags for reasoning - skip those
-        # Extract only text outside thinking tags
-        import re
-        # Remove thinking tags and content
-        no_thinking = re.sub(r'<think>.*?</think>', '', cleaned_text, flags=re.DOTALL)
-        actual_output = no_thinking.strip()
+    # Extract content between <output> tags if present
+    output_match = re.search(r'<output>\s*(.*?)\s*</output>', response, re.DOTALL)
 
-        # Print the actual output (not the thinking)
-        print(f"\r{actual_output[:200]}{'...' if len(actual_output) > 200 else ''}", end="", flush=True)
+    if output_match:
+        cleaned_text = output_match.group(1).strip()
+    else:
+        # Qwen doesn't use thinking tags, so just use the response
+        cleaned_text = response.strip()
+        # Remove any XML-like tags that might have leaked through
+        cleaned_text = re.sub(r'<output>|</output>', '', cleaned_text)
+        cleaned_text = cleaned_text.strip()
 
-    print()  # New line after streaming
+    print(cleaned_text)
     print("-" * 50)
 
-    return actual_output.strip()
+    return cleaned_text
 
 
 def detect_platform():
