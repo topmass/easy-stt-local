@@ -58,11 +58,12 @@ def cleanup_transcription(text, model, tokenizer, base_prompt):
     print("\nCleaned transcription:")
     print("-" * 50)
 
-    # Generate the response (no max_tokens limit for long transcriptions)
+    # Generate the response (high max_tokens for long transcriptions)
     response = generate(
         model,
         tokenizer,
         prompt=prompt,
+        max_tokens=2048,  # Support up to ~10 minutes of speech
         verbose=False
     )
 
