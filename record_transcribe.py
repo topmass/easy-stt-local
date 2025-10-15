@@ -39,10 +39,19 @@ def cleanup_transcription(text, model, tokenizer, base_prompt):
     """Clean up transcription using DeepSeek R1 Distill with streaming."""
     from mlx_lm import stream_generate
 
-    prompt = f"{base_prompt}\n\nTranscription:\n{text}\n\nCleaned:"
+    # Format prompt with system instruction and user message
+    messages = [
+        {"role": "system", "content": base_prompt},
+        {"role": "user", "content": f"Clean this transcription:\n\n{text}"}
+    ]
+
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
     # Stream tokens and build up the cleaned text
     cleaned_text = ""
+    in_thinking = False
+    actual_output = ""
+
     print("\nCleaned transcription (streaming):")
     print("-" * 50)
 
@@ -52,14 +61,22 @@ def cleanup_transcription(text, model, tokenizer, base_prompt):
         prompt=prompt,
         max_tokens=1024
     ):
-        # Print each token as it arrives
-        print(response.text, end="", flush=True)
         cleaned_text = response.text
+
+        # DeepSeek R1 uses <think> tags for reasoning - skip those
+        # Extract only text outside thinking tags
+        import re
+        # Remove thinking tags and content
+        no_thinking = re.sub(r'<think>.*?</think>', '', cleaned_text, flags=re.DOTALL)
+        actual_output = no_thinking.strip()
+
+        # Print the actual output (not the thinking)
+        print(f"\r{actual_output[:200]}{'...' if len(actual_output) > 200 else ''}", end="", flush=True)
 
     print()  # New line after streaming
     print("-" * 50)
 
-    return cleaned_text.strip()
+    return actual_output.strip()
 
 
 def detect_platform():
