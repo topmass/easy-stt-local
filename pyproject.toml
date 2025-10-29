@@ -1,6 +1,6 @@
 [project]
 name = "recordtranscribe"
-version = "0.4.0"
+version = "0.5.0"
 description = "Cross-platform voice recording and transcription with streaming ASR and optional LLM cleanup"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,7 +22,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional: LLM cleanup for removing filler words (macOS only for now)
+# Optional: LLM cleanup for removing filler words
 cleanup = [
+    # macOS: MLX-based cleanup
     "mlx-lm>=0.19.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Linux: PyTorch-based cleanup with 4-bit quantization
+    "transformers>=4.35.0; sys_platform == 'linux'",
+    "bitsandbytes>=0.41.0; sys_platform == 'linux'",
+    "accelerate>=0.24.0; sys_platform == 'linux'",
 ]
