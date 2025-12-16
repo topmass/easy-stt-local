@@ -19,6 +19,9 @@ dependencies = [
     "soundfile>=0.12.1; sys_platform == 'linux'",
     "ml-dtypes>=0.5.0; sys_platform == 'linux'",
     "cuda-python>=12.3,<13.0; sys_platform == 'linux'",
+    "flet[all]>=0.28.3",
+    "pyside6>=6.10.0",
+    "pyinstaller>=6.16.0",
 ]
 
 [project.optional-dependencies]
