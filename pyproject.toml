@@ -1,19 +1,43 @@
 [project]
 name = "recordtranscribe"
-version = "0.2.0"
-description = "Voice recording and transcription with NeMo ASR - GPU accelerated"
+version = "0.5.0"
+description = "Cross-platform voice recording and transcription with streaming ASR and optional LLM cleanup"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pynput>=1.8.1",
-    "pyperclip>=1.9.0",
     "sounddevice>=0.5.2",
-    "soundfile>=0.12.1",
     "numpy>=1.26.0",
-    "torch>=2.8.0",
-    "torchaudio>=2.8.0",
-    "torchvision>=0.23.0",
-    "nemo-toolkit[asr]>=2.0.0",
-    "ml-dtypes>=0.5.0",
-    "cuda-python>=12.3,<13.0",
+    # Platform-specific ASR dependencies
+    # macOS Apple Silicon: Parakeet-MLX (streaming, no file I/O)
+    "parakeet-mlx>=0.1.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Linux: NeMo with Parakeet (GPU accelerated, direct array transcription)
+    "torch>=2.8.0; sys_platform == 'linux'",
+    "torchaudio>=2.8.0; sys_platform == 'linux'",
+    "torchvision>=0.23.0; sys_platform == 'linux'",
+    "nemo-toolkit[asr]>=2.0.0; sys_platform == 'linux'",
+    "soundfile>=0.12.1; sys_platform == 'linux'",
+    "ml-dtypes>=0.5.0; sys_platform == 'linux'",
+    "cuda-python>=12.3,<13.0; sys_platform == 'linux'",
+    "flet[all]>=0.28.3",
+    "pyside6>=6.10.0",
+    "pyinstaller>=6.16.0",
+]
+
+[project.optional-dependencies]
+# Optional: GUI dependencies
+gui = [
+    "flet>=0.24.0",
+    "pystray>=0.19.5",
+    "pillow>=10.0.0",
+]
+
+# Optional: LLM cleanup for removing filler words
+cleanup = [
+    # macOS: MLX-based cleanup
+    "mlx-lm>=0.19.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Linux: PyTorch-based cleanup with 4-bit quantization
+    "transformers>=4.35.0; sys_platform == 'linux'",
+    "bitsandbytes>=0.41.0; sys_platform == 'linux'",
+    "accelerate>=0.24.0; sys_platform == 'linux'",
 ]

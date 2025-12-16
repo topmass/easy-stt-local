@@ -1,154 +1,24 @@
 import os
 import sys
 import time
-import numpy as np
-import sounddevice as sd
-from nemo.collections.asr.models import ASRModel
-import torch
-import pyperclip
-import subprocess
-import platform
+import argparse
 
+# Suppress tokenizer parallelism warning when forking for clipboard
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-class AudioRecorder:
-    def __init__(self):
-        self.recording = False
-        self.audio_data = []
-        self.sample_rate = 16000  # ASR models expect 16kHz
+# Import from extracted core modules
+from src.core.platform_detect import detect_platform
+from src.core.clipboard import copy_to_clipboard
+from src.core.audio_recorder import AudioRecorder
+from src.core.cleanup import load_cleanup_model, load_cleanup_prompt, cleanup_transcription
 
-        # NeMo will automatically use GPU if available
-        print("NeMo will automatically detect and use available GPU")
-
-        # Sound effect paths
-        self.start_sound = os.path.join("soundfx", "start.mp3")
-        self.stop_sound = os.path.join("soundfx", "stop.mp3")
-
-        # Load NeMo ASR model
-        print("Loading NeMo ASR model...")
-        self.model = ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
-        self.model.eval()
-        print("Model loaded!")
-
-
-    def play_sound(self, sound_file):
-        """Play a sound file using system audio player."""
-        if not os.path.exists(sound_file):
-            return
-        try:
-            system = platform.system()
-            if system == "Darwin":  # macOS
-                subprocess.Popen(["afplay", sound_file],
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL)
-            elif system == "Linux":
-                # Try multiple Linux audio players
-                for player in ["paplay", "aplay", "ffplay"]:
-                    try:
-                        subprocess.Popen([player, sound_file],
-                                       stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL)
-                        break
-                    except FileNotFoundError:
-                        continue
-            elif system == "Windows":
-                import winsound
-                winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
-        except Exception:
-            pass  # Silently fail if sound can't play
-
-    def callback(self, indata, frames, time, status):
-        if self.recording:
-            self.audio_data.extend(indata.copy())
-
-    def start_recording(self):
-        """Start the recording process."""
-        if not self.recording:
-            # Play start sound
-            self.play_sound(self.start_sound)
-                
-            print("Recording started... Press left alt once to stop.")
-            self.audio_data = []
-            self.recording = True
-            
-            # Start recording stream
-            self.stream = sd.InputStream(
-                channels=1,
-                samplerate=self.sample_rate,
-                callback=self.callback
-            )
-            self.stream.start()
-    
-    def stop_recording(self):
-        """Stop the recording and process the audio."""
-        if self.recording:
-            print("Recording stopped. Transcribing...")
-            self.recording = False
-            self.stream.stop()
-            self.stream.close()
-
-            # Process audio data
-            if len(self.audio_data) > 0:
-                # Concatenate and convert to float32
-                audio_array = np.concatenate(self.audio_data, axis=0).flatten()
-                audio_float32 = audio_array.astype(np.float32)
-
-                try:
-                    # Save to temporary WAV file (minimal approach)
-                    # NeMo's transcribe() method expects file paths
-                    import tempfile
-                    import soundfile as sf
-
-                    print("Transcribing audio...")
-
-                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-                        temp_path = tmp_file.name
-                        # Write audio using soundfile (supports float32 directly)
-                        sf.write(temp_path, audio_float32, self.sample_rate)
-
-                    try:
-                        # Transcribe using file path
-                        hypotheses = self.model.transcribe([temp_path])
-
-                        # Extract text from NeMo output
-                        full_transcription = ""
-                        if hypotheses and len(hypotheses) > 0:
-                            hypothesis = hypotheses[0]
-                            full_transcription = hypothesis.text if hasattr(hypothesis, 'text') else str(hypothesis)
-
-                        # Print transcription
-                        print("\nTranscription:")
-                        print("-" * 50)
-                        print(full_transcription)
-                        print("-" * 50)
-
-                        # Copy to clipboard
-                        if full_transcription:
-                            if copy_to_clipboard(full_transcription):
-                                print("Transcription copied to clipboard!")
-                            else:
-                                print("Clipboard unavailable. See README for options.")
-
-                            # Play stop sound after transcription is copied
-                            self.play_sound(self.stop_sound)
-                    finally:
-                        # Clean up temp file
-                        try:
-                            os.remove(temp_path)
-                        except:
-                            pass
-
-                except Exception as e:
-                    print(f"Error during transcription: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print("No audio recorded!")
 
 def is_window_focused():
     """Check if the current console window is focused (Windows only)."""
     if not sys.platform.startswith("win"):
         return True
     try:
+        import ctypes
         foreground_window = ctypes.windll.user32.GetForegroundWindow()
         console_window = ctypes.windll.kernel32.GetConsoleWindow()
         return foreground_window == console_window
@@ -156,33 +26,36 @@ def is_window_focused():
         return True
 
 
-def copy_to_clipboard(text: str) -> bool:
-    """Copy text to clipboard using system clipboard command."""
-    import subprocess
-    import os
-    
-    # For Wayland systems
-    if os.environ.get('XDG_SESSION_TYPE') == 'wayland':
-        try:
-            subprocess.run(['wl-copy'], input=text.encode(), check=True)
-            print("Copied to clipboard using wl-copy")
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("wl-copy not found. Install with: sudo pacman -S wl-clipboard")
-            return False
-    
-    # For X11 systems  
-    else:
-        try:
-            subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode(), check=True)
-            print("Copied to clipboard using xclip")
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("xclip not found. Install with: sudo pacman -S xclip")
-            return False
-
 def main():
-    recorder = AudioRecorder()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Real-time speech-to-text transcription')
+    parser.add_argument('--cleanup', action='store_true',
+                       help='Enable LLM cleanup to remove filler words (requires mlx-lm)')
+    args = parser.parse_args()
+
+    # Detect platform and load appropriate backend
+    backend, modules = detect_platform()
+
+    # Load cleanup model if requested
+    cleanup_model = None
+    cleanup_tokenizer = None
+    cleanup_prompt = None
+
+    if args.cleanup:
+        print("")
+        cleanup_model, cleanup_tokenizer = load_cleanup_model()
+        cleanup_prompt = load_cleanup_prompt()
+        print("✨ Cleanup enabled: transcriptions will be cleaned of filler words")
+        print("")
+
+    recorder = AudioRecorder(
+        backend,
+        modules,
+        enable_cleanup=args.cleanup,
+        cleanup_model=cleanup_model,
+        cleanup_tokenizer=cleanup_tokenizer,
+        cleanup_prompt=cleanup_prompt
+    )
 
     # Allow changing the hotkey via env vars to avoid conflicts
     hotkey = os.getenv("RT_HOTKEY", "alt").strip().lower()  # e.g., 'f9', 'alt', 'caps_lock', 's'
@@ -212,7 +85,35 @@ def main():
                 current_time = time.time()
                 if recorder.recording:
                     if current_time >= stop_armed_at:
-                        recorder.stop_recording()
+                        transcription = recorder.stop_recording()
+                        if transcription:
+                            # Apply cleanup if enabled
+                            text_to_copy = transcription
+                            if recorder.enable_cleanup and transcription:
+                                try:
+                                    cleaned_text = cleanup_transcription(
+                                        transcription,
+                                        recorder.cleanup_model,
+                                        recorder.cleanup_tokenizer,
+                                        recorder.cleanup_prompt
+                                    )
+                                    text_to_copy = cleaned_text
+                                except Exception as e:
+                                    print(f"Warning: Cleanup failed: {e}")
+                                    print("Using raw transcription instead.")
+
+                            # Copy to clipboard
+                            if text_to_copy:
+                                if copy_to_clipboard(text_to_copy):
+                                    if recorder.enable_cleanup:
+                                        print("\n✅ Cleaned transcription copied to clipboard!")
+                                    else:
+                                        print("\n✅ Transcription copied to clipboard!")
+                                else:
+                                    print("Clipboard unavailable. See README for options.")
+
+                                # Play stop sound after transcription is copied
+                                recorder.play_sound(recorder.stop_sound)
                     last_alt_press_time = 0.0
                 elif current_time - last_alt_press_time < double_tap_threshold:
                     recorder.start_recording()
@@ -252,12 +153,40 @@ def main():
 
         def on_press(key):
             nonlocal last_alt_press_time, running, stop_armed_at
-            
+
             if is_hotkey(key):
                 current_time = time.time()
                 if recorder.recording:
                     if current_time >= stop_armed_at:
-                        recorder.stop_recording()
+                        transcription = recorder.stop_recording()
+                        if transcription:
+                            # Apply cleanup if enabled
+                            text_to_copy = transcription
+                            if recorder.enable_cleanup and transcription:
+                                try:
+                                    cleaned_text = cleanup_transcription(
+                                        transcription,
+                                        recorder.cleanup_model,
+                                        recorder.cleanup_tokenizer,
+                                        recorder.cleanup_prompt
+                                    )
+                                    text_to_copy = cleaned_text
+                                except Exception as e:
+                                    print(f"Warning: Cleanup failed: {e}")
+                                    print("Using raw transcription instead.")
+
+                            # Copy to clipboard
+                            if text_to_copy:
+                                if copy_to_clipboard(text_to_copy):
+                                    if recorder.enable_cleanup:
+                                        print("\n✅ Cleaned transcription copied to clipboard!")
+                                    else:
+                                        print("\n✅ Transcription copied to clipboard!")
+                                else:
+                                    print("Clipboard unavailable. See README for options.")
+
+                                # Play stop sound after transcription is copied
+                                recorder.play_sound(recorder.stop_sound)
                     last_alt_press_time = 0.0
                 elif current_time - last_alt_press_time < double_tap_threshold:
                     recorder.start_recording()
@@ -268,7 +197,7 @@ def main():
                     last_alt_press_time = current_time
             else:
                 pass  # No other key actions needed
-                    
+
         listener = pynput_keyboard.Listener(on_press=on_press)
         listener.start()
         try:
