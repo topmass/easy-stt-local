@@ -102,16 +102,19 @@ class TranscriptionService:
 
             # Load Parakeet STT model
             self.stt_model = from_pretrained(self.config["model"])
-            self.sample_rate = self.stt_model.config.sample_rate
+            # Sample rate is 16000 for Parakeet (set in __init__)
 
             # Try to load cleanup model
             try:
                 from mlx_lm import load as load_lm
+                send_message({"type": "status", "status": "loading_cleanup_model"})
                 self.cleanup_model, self.cleanup_tokenizer = load_lm(
                     self.config["cleanup_model"]
                 )
+                send_message({"type": "status", "status": "cleanup_model_loaded"})
             except Exception as e:
-                # Cleanup is optional
+                # Cleanup is optional - log the error
+                send_message({"type": "warning", "message": f"Cleanup model failed to load: {e}"})
                 self.cleanup_model = None
                 self.cleanup_tokenizer = None
 
@@ -166,22 +169,23 @@ class TranscriptionService:
             raise ValueError(f"Unknown backend: {backend}")
 
     def _transcribe_mlx(self, audio_data: np.ndarray, use_cleanup: bool) -> tuple[str, bool]:
-        """Transcribe using MLX Parakeet."""
+        """Transcribe using MLX Parakeet streaming API."""
         import mlx.core as mx
 
-        # Convert to MLX array
+        # Convert numpy → MLX array (in-memory, no I/O!)
         audio_mlx = mx.array(audio_data.astype(np.float32))
 
-        # Transcribe
-        result = self.stt_model.transcribe(audio_mlx)
+        # Use streaming transcriber (this is the correct API)
+        transcriber = self.stt_model.transcribe_stream(context_size=(256, 256))
+        transcriber.__enter__()
 
-        # Handle different result formats
-        if hasattr(result, 'text'):
-            text = result.text.strip()
-        elif isinstance(result, str):
-            text = result.strip()
-        else:
-            text = str(result).strip()
+        # Add audio and get result
+        transcriber.add_audio(audio_mlx)
+        result = transcriber.result
+        text = result.text.strip()
+
+        # Cleanup transcriber
+        transcriber.__exit__(None, None, None)
 
         # Apply cleanup if requested and available
         cleanup_used = False
@@ -200,23 +204,28 @@ class TranscriptionService:
 
     def _apply_cleanup(self, text: str) -> str:
         """Apply LLM cleanup to transcribed text."""
+        import re
+
         if self.cleanup_model is None or self.cleanup_tokenizer is None:
             return text
 
         try:
             from mlx_lm import generate
 
-            # Load cleanup prompt
-            prompt_path = Path(__file__).parent.parent.parent / "cleanup_prompt.txt"
-            if prompt_path.exists():
-                cleanup_prompt = prompt_path.read_text().strip()
-            else:
-                cleanup_prompt = "Clean up the following transcription by removing filler words and fixing grammar, but preserve the original meaning:"
+            # Simple, direct cleanup prompt
+            cleanup_prompt = """You are a transcription cleanup assistant. Your task is to clean up speech transcriptions.
+
+Rules:
+- Remove filler words (um, uh, like, you know, basically, actually)
+- Fix grammar and punctuation
+- Keep the original meaning and tone
+- Output ONLY the cleaned text, nothing else
+- Do NOT wrap output in tags or add any formatting"""
 
             # Format prompt for Qwen
             messages = [
                 {"role": "system", "content": cleanup_prompt},
-                {"role": "user", "content": text}
+                {"role": "user", "content": f"Clean this transcription:\n\n{text}"}
             ]
 
             prompt = self.cleanup_tokenizer.apply_chat_template(
@@ -234,7 +243,13 @@ class TranscriptionService:
                 verbose=False
             )
 
-            return cleaned.strip() if cleaned else text
+            if cleaned:
+                # Strip any XML/HTML tags the model might add
+                cleaned = re.sub(r'<[^>]+>', '', cleaned)
+                # Remove common wrapper patterns
+                cleaned = re.sub(r'^(output|response|result):\s*', '', cleaned, flags=re.IGNORECASE)
+                return cleaned.strip()
+            return text
 
         except Exception as e:
             # If cleanup fails, return original text
@@ -270,6 +285,7 @@ class TranscriptionService:
 
                 # Transcribe
                 use_cleanup = cmd.get("cleanup", False)
+                send_message({"type": "debug", "message": f"Cleanup requested: {use_cleanup}, available: {self.cleanup_model is not None}"})
                 text, cleanup_used = self.transcribe(audio_data, use_cleanup)
 
                 send_message({

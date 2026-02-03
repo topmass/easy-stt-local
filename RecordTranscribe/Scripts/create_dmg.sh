@@ -11,8 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_NAME="RecordTranscribe"
 BUILD_DIR="${PROJECT_DIR}/build"
-APP_BUNDLE="${BUILD_DIR}/Build/Products/Release/${APP_NAME}.app"
-DMG_NAME="${APP_NAME}-$(date +%Y%m%d)"
+APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
+DMG_NAME="${APP_NAME}"
 DMG_PATH="${BUILD_DIR}/${DMG_NAME}.dmg"
 STAGING_DIR="${BUILD_DIR}/dmg-staging"
 
@@ -32,7 +32,7 @@ log_error() {
 # Check if app bundle exists
 if [ ! -d "$APP_BUNDLE" ]; then
     log_error "App bundle not found at: ${APP_BUNDLE}"
-    log_error "Run bundle_python.sh first!"
+    log_error "Run ./bundle_python.sh first!"
     exit 1
 fi
 
@@ -64,9 +64,11 @@ rm -rf "${STAGING_DIR}"
 DMG_SIZE=$(du -h "${DMG_PATH}" | cut -f1)
 
 log_info ""
+log_info "========================================="
 log_info "DMG created successfully!"
-log_info "  Path: ${DMG_PATH}"
-log_info "  Size: ${DMG_SIZE}"
+log_info "========================================="
+log_info "Path: ${DMG_PATH}"
+log_info "Size: ${DMG_SIZE}"
 log_info ""
 log_info "To install:"
 log_info "  1. Open ${DMG_PATH}"

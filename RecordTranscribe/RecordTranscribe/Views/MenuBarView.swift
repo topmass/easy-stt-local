@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuBarView: View {
     @ObservedObject var transcriptionService: TranscriptionService
     @State private var isHovering = false
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,7 +39,8 @@ struct MenuBarView: View {
                 Spacer()
 
                 Button {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    openSettings()
                 } label: {
                     Image(systemName: "gear")
                 }

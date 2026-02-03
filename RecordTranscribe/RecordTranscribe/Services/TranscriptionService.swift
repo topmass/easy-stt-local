@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
+import AppKit
 import Combine
+import SwiftUI
 
 enum ServiceStatus {
     case idle
@@ -19,6 +21,9 @@ class TranscriptionService: ObservableObject {
     @Published var lastTranscription: String?
     @Published var errorMessage: String?
     @Published var transcriptionHistory: [TranscriptionEntry] = []
+
+    // Settings
+    @AppStorage("cleanupEnabled") private var cleanupEnabled = true
 
     private var pythonProcess: Process?
     private var inputPipe: Pipe?
@@ -46,31 +51,35 @@ class TranscriptionService: ObservableObject {
 
     private func launchPythonService() {
         let bundle = Bundle.main
-        let pythonPath: String
-        let scriptPath: String
+        var pythonPath: String = ""
+        var scriptPath: String = ""
 
-        // Check if running from Xcode (development) or bundled app
-        if let bundledPython = bundle.path(forResource: "python-env/bin/python3", ofType: nil, inDirectory: "Resources") {
+        // Check if running from bundled app (has python-env in Resources)
+        if let bundledPython = bundle.path(forResource: "python-env/bin/python3", ofType: nil, inDirectory: "Resources"),
+           let bundledScript = bundle.path(forResource: "transcription_service", ofType: "py", inDirectory: "Resources/PythonService") {
             pythonPath = bundledPython
-            scriptPath = bundle.path(forResource: "transcription_service", ofType: "py", inDirectory: "Resources/PythonService")!
+            scriptPath = bundledScript
         } else {
-            // Development mode - use system Python from uv
-            let projectRoot = bundle.bundlePath
-                .components(separatedBy: "/RecordTranscribe/")
-                .first ?? FileManager.default.currentDirectoryPath
+            // Development mode - try known paths
+            let devPaths: [(python: String, script: String)] = [
+                // Primary: easy-stt-local venv + swiftui project script
+                (
+                    "/Users/benjaminczegeny/src/github.com/easy-stt-local/.venv/bin/python3",
+                    "/Users/benjaminczegeny/src/github.com/record-transcribe-swiftui/RecordTranscribe/PythonService/transcription_service.py"
+                ),
+                // Alternative: swiftui project's own venv
+                (
+                    "/Users/benjaminczegeny/src/github.com/record-transcribe-swiftui/.venv/bin/python3",
+                    "/Users/benjaminczegeny/src/github.com/record-transcribe-swiftui/RecordTranscribe/PythonService/transcription_service.py"
+                )
+            ]
 
-            // Try to find uv-managed Python
-            pythonPath = "\(projectRoot)/.venv/bin/python3"
-            scriptPath = "\(projectRoot)/RecordTranscribe/PythonService/transcription_service.py"
-
-            // Fallback to checking parent directories for the venv
-            if !FileManager.default.fileExists(atPath: pythonPath) {
-                // Try the easy-stt-local directory
-                let easySTTPath = projectRoot.replacingOccurrences(of: "record-transcribe-swiftui", with: "easy-stt-local")
-                let fallbackPython = "\(easySTTPath)/.venv/bin/python3"
-                if FileManager.default.fileExists(atPath: fallbackPython) {
-                    launchWithPython(fallbackPython, script: scriptPath)
-                    return
+            for paths in devPaths {
+                if FileManager.default.fileExists(atPath: paths.python) &&
+                   FileManager.default.fileExists(atPath: paths.script) {
+                    pythonPath = paths.python
+                    scriptPath = paths.script
+                    break
                 }
             }
         }
@@ -79,15 +88,15 @@ class TranscriptionService: ObservableObject {
     }
 
     private func launchWithPython(_ pythonPath: String, script scriptPath: String) {
-        guard FileManager.default.fileExists(atPath: pythonPath) else {
+        guard !pythonPath.isEmpty, FileManager.default.fileExists(atPath: pythonPath) else {
             DispatchQueue.main.async {
                 self.status = .error
-                self.errorMessage = "Python not found at: \(pythonPath)"
+                self.errorMessage = "Python not found. Run: cd Scripts && ./bundle_python.sh"
             }
             return
         }
 
-        guard FileManager.default.fileExists(atPath: scriptPath) else {
+        guard !scriptPath.isEmpty, FileManager.default.fileExists(atPath: scriptPath) else {
             DispatchQueue.main.async {
                 self.status = .error
                 self.errorMessage = "Service script not found at: \(scriptPath)"
@@ -172,6 +181,9 @@ class TranscriptionService: ObservableObject {
                     // Auto-copy to clipboard
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
+
+                    // Play completion sound
+                    SoundManager.shared.playStopSound()
                 }
                 self.status = .idle
 
@@ -221,6 +233,9 @@ class TranscriptionService: ObservableObject {
     func startRecording() {
         guard status == .idle else { return }
 
+        // Play start sound
+        SoundManager.shared.playStartSound()
+
         isRecording = true
         status = .recording
 
@@ -253,7 +268,8 @@ class TranscriptionService: ObservableObject {
         sendCommand([
             "command": "transcribe",
             "audio": base64Audio,
-            "sample_rate": 16000
+            "sample_rate": 16000,
+            "cleanup": cleanupEnabled
         ])
     }
 
