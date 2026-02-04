@@ -157,8 +157,12 @@ class TranscriptionService:
             send_error(f"Failed to load NeMo models: {e}")
             sys.exit(1)
 
-    def transcribe(self, audio_data: np.ndarray, use_cleanup: bool = False) -> str:
-        """Transcribe audio data."""
+    def transcribe(self, audio_data: np.ndarray, use_cleanup: bool = False) -> tuple[str, str, bool]:
+        """Transcribe audio data.
+
+        Returns:
+            tuple: (final_text, original_text, cleanup_used)
+        """
         backend = self.config["backend"]
 
         if backend == "parakeet-mlx":
@@ -168,8 +172,12 @@ class TranscriptionService:
         else:
             raise ValueError(f"Unknown backend: {backend}")
 
-    def _transcribe_mlx(self, audio_data: np.ndarray, use_cleanup: bool) -> tuple[str, bool]:
-        """Transcribe using MLX Parakeet streaming API."""
+    def _transcribe_mlx(self, audio_data: np.ndarray, use_cleanup: bool) -> tuple[str, str, bool]:
+        """Transcribe using MLX Parakeet streaming API.
+
+        Returns:
+            tuple: (final_text, original_text, cleanup_used)
+        """
         import mlx.core as mx
 
         # Convert numpy → MLX array (in-memory, no I/O!)
@@ -182,25 +190,32 @@ class TranscriptionService:
         # Add audio and get result
         transcriber.add_audio(audio_mlx)
         result = transcriber.result
-        text = result.text.strip()
+        original_text = result.text.strip()
 
         # Cleanup transcriber
         transcriber.__exit__(None, None, None)
 
         # Apply cleanup if requested and available
+        final_text = original_text
         cleanup_used = False
         if use_cleanup and self.cleanup_model is not None:
-            text = self._apply_cleanup(text)
+            final_text = self._apply_cleanup(original_text)
             cleanup_used = True
 
-        return text, cleanup_used
+        return final_text, original_text, cleanup_used
 
-    def _transcribe_nemo(self, audio_data: np.ndarray, use_cleanup: bool) -> tuple[str, bool]:
-        """Transcribe using NeMo Parakeet."""
+    def _transcribe_nemo(self, audio_data: np.ndarray, use_cleanup: bool) -> tuple[str, str, bool]:
+        """Transcribe using NeMo Parakeet.
+
+        Returns:
+            tuple: (final_text, original_text, cleanup_used)
+        """
         # NeMo accepts numpy arrays directly
         hypotheses = self.stt_model.transcribe(audio=[audio_data])
-        text = hypotheses[0].text if hasattr(hypotheses[0], 'text') else str(hypotheses[0])
-        return text.strip(), False
+        original_text = hypotheses[0].text if hasattr(hypotheses[0], 'text') else str(hypotheses[0])
+        original_text = original_text.strip()
+        # NeMo doesn't have cleanup support yet
+        return original_text, original_text, False
 
     def _apply_cleanup(self, text: str) -> str:
         """Apply LLM cleanup to transcribed text."""
@@ -286,11 +301,12 @@ Rules:
                 # Transcribe
                 use_cleanup = cmd.get("cleanup", False)
                 send_message({"type": "debug", "message": f"Cleanup requested: {use_cleanup}, available: {self.cleanup_model is not None}"})
-                text, cleanup_used = self.transcribe(audio_data, use_cleanup)
+                text, original_text, cleanup_used = self.transcribe(audio_data, use_cleanup)
 
                 send_message({
                     "type": "transcription",
                     "text": text,
+                    "original_text": original_text,
                     "cleanup_used": cleanup_used
                 })
 

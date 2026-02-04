@@ -22,8 +22,11 @@ struct MenuBarView: View {
                 Divider()
                     .padding(.vertical, 8)
 
-                LastTranscriptionView(text: lastTranscription)
-                    .padding(.horizontal, 16)
+                LastTranscriptionView(
+                    text: lastTranscription,
+                    originalText: transcriptionService.lastOriginalTranscription
+                )
+                .padding(.horizontal, 16)
             }
 
             Divider()
@@ -147,14 +150,32 @@ struct RecordingButton: View {
 
 struct LastTranscriptionView: View {
     let text: String
+    let originalText: String?
     @State private var isCopied = false
+    @State private var showOriginal = false
+
+    var hasCleanup: Bool {
+        if let original = originalText {
+            return original != text
+        }
+        return false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Last Transcription")
+                Text(showOriginal ? "Original" : "Transcription")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                if hasCleanup {
+                    Button(action: { showOriginal.toggle() }) {
+                        Text(showOriginal ? "Show Cleaned" : "Show Original")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
 
                 Spacer()
 
@@ -165,10 +186,23 @@ struct LastTranscriptionView: View {
                 .buttonStyle(.plain)
             }
 
-            Text(text)
-                .font(.system(.body, design: .default))
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView {
+                Text(showOriginal ? (originalText ?? text) : text)
+                    .font(.system(.body, design: .default))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 150)
+
+            if hasCleanup && !showOriginal {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles")
+                        .font(.caption2)
+                    Text("Cleaned up")
+                        .font(.caption2)
+                }
+                .foregroundColor(.purple)
+            }
         }
         .padding(12)
         .background(Color.secondary.opacity(0.1))

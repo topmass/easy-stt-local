@@ -19,6 +19,7 @@ class TranscriptionService: ObservableObject {
     @Published var status: ServiceStatus = .loading
     @Published var isRecording = false
     @Published var lastTranscription: String?
+    @Published var lastOriginalTranscription: String?
     @Published var errorMessage: String?
     @Published var transcriptionHistory: [TranscriptionEntry] = []
 
@@ -175,8 +176,12 @@ class TranscriptionService: ObservableObject {
 
             case "transcription":
                 if let text = message["text"] as? String {
+                    let originalText = message["original_text"] as? String ?? text
+                    let cleanupUsed = message["cleanup_used"] as? Bool ?? false
+
                     self.lastTranscription = text
-                    self.addToHistory(text: text, cleanup: message["cleanup_used"] as? Bool ?? false)
+                    self.lastOriginalTranscription = originalText
+                    self.addToHistory(text: text, originalText: originalText, cleanup: cleanupUsed)
 
                     // Auto-copy to clipboard
                     NSPasteboard.general.clearContents()
@@ -248,9 +253,6 @@ class TranscriptionService: ObservableObject {
             // Called when recording stops
             self?.processRecording(audioData)
         }
-
-        // Notify Python service
-        sendCommand(["command": "start_streaming"])
     }
 
     func stopRecording() {
@@ -275,10 +277,11 @@ class TranscriptionService: ObservableObject {
 
     // MARK: - History
 
-    private func addToHistory(text: String, cleanup: Bool) {
+    private func addToHistory(text: String, originalText: String, cleanup: Bool) {
         let entry = TranscriptionEntry(
             id: UUID(),
             text: text,
+            originalText: originalText,
             timestamp: Date(),
             cleanupUsed: cleanup
         )
@@ -290,14 +293,32 @@ class TranscriptionService: ObservableObject {
         }
     }
 
+    private var historyWindowController: HistoryWindowController?
+
     func showHistoryWindow() {
-        // TODO: Open history window
+        NSApp.activate(ignoringOtherApps: true)
+
+        if historyWindowController == nil {
+            historyWindowController = HistoryWindowController(transcriptionService: self)
+        }
+
+        historyWindowController?.showWindow(nil)
+        historyWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 }
 
-struct TranscriptionEntry: Identifiable {
+struct TranscriptionEntry: Identifiable, Hashable {
     let id: UUID
     let text: String
+    let originalText: String
     let timestamp: Date
     let cleanupUsed: Bool
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    static func == (lhs: TranscriptionEntry, rhs: TranscriptionEntry) -> Bool {
+        lhs.id == rhs.id
+    }
 }

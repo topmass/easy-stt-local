@@ -17,6 +17,7 @@
 		A1000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000008 /* Assets.xcassets */; };
 		A1000009 /* start.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = B1000009 /* start.mp3 */; };
 		A100000A /* stop.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = B100000A /* stop.mp3 */; };
+		A100000B /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000C /* HistoryView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +33,7 @@
 		B1000009 /* start.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = start.mp3; sourceTree = "<group>"; };
 		B100000A /* stop.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = stop.mp3; sourceTree = "<group>"; };
 		B100000B /* RecordTranscribe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RecordTranscribe.entitlements; sourceTree = "<group>"; };
+		B100000C /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -70,6 +72,7 @@
 			children = (
 				B1000002 /* MenuBarView.swift */,
 				B1000003 /* SettingsView.swift */,
+				B100000C /* HistoryView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -181,6 +184,7 @@
 				A1000005 /* AudioRecorder.swift in Sources */,
 				A1000006 /* HotkeyManager.swift in Sources */,
 				A1000007 /* SoundManager.swift in Sources */,
+				A100000B /* HistoryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
